@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+    <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
+    <meta http-equiv="x-ua-compatible" content="IE=edge" />
+    <title>Little Lamp</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+        }
+        div.head{
+            background-color: #333;
+            color: #fff;
+            font-size: 2em;
+            padding: 0.5em;
+        }
+        div.panel div.title{
+            border-top: 1px dotted #fff;
+            background-color: #666;
+            color: #fff;
+            padding-left: 10px;
+        }
+        div.panel div.content{
+            /* display: none; */
+            padding: 1em;
+        }
+
+        div.panel div.content span.label{
+            display: inline-block;
+            width: 5em;
+        }
+        div.panel div.content select{
+            width: 10em;
+        }
+        div.panel div.content input{
+            width: 10em;
+        }
+
+        div.panel div.content div.content-line {
+            padding: 1em;
+        }
+        div.panel div.content div.content-line span.label {
+            line-height: 2em;
+            width: 3em;
+            position: relative;
+            top: -0.8em;
+        }
+
+        .slider {
+            display: inline-block;
+            width: 14em;
+            height: 2em;
+            border-radius: 0.5em;
+            border: 0.05em solid #ccc;
+        }
+        .slider-control {
+            position: relative;
+            top: -0.4em;
+            width: 1.2em;
+            height: 2.8em;
+            background: #fff;
+            border-radius: 0.2em;
+            border: 0.05em solid #ccc;
+        }
+        .slider-color-warm {
+            background: linear-gradient(270deg, orange,white);
+        }
+        .slider-color-brightness{
+            background: linear-gradient(270deg, white, gray);
+        }
+
+    </style>
+    <script>
+        document.addEventListener('DOMContentLoaded', function (event) {
+            var tagMap = {
+                warm: 0,
+                brightness: 0
+            }
+
+            const nvl = (data, replace) => {
+                return data ? data : replace ? replace : '--'
+            }
+
+            var baseHost = document.location.origin
+            // const brightnessAButton = document.getElementById('btn-brightness-a')
+            // const iptBrightnessA = document.getElementById('ipt-brightness-a')
+            // const brightnessBButton = document.getElementById('btn-brightness-b')
+            // const iptBrightnessB = document.getElementById('ipt-brightness-b')
+
+            const sendCmd = (code, value) => {
+                console.log(`send cmd: ${code}=${value}`)
+                const query = `${baseHost}/control?var=${code}&val=${value}`
+                fetch(query).then(response => {
+                    console.log(`request to ${query} finished, status: ${response.status}`)
+                })
+            }
+
+            const lightChange = ()=>{
+                var brightnessA = 0 // white
+                var brightnessB = 0 // orange
+                if(tagMap.warm > 50){
+                    // orange is higher
+                    brightnessB = tagMap.brightness
+                    brightnessA = brightnessB * (1 - tagMap.warm / 100)
+                }else{
+                    // white is higher
+                    brightnessA = tagMap.brightness
+                    brightnessB = brightnessA * (tagMap.warm / 100)
+                }
+                sendCmd("set-brightness-a", brightnessA.toFixed())
+                sendCmd("set-brightness-b", brightnessB.toFixed())
+            }
+
+            const sliderChange = (tag, value) => {
+                tagMap[tag] = value
+                //console.log('warm: ' + tagMap.warm + ', brightness: ' + tagMap.brightness)
+                lightChange()
+            }
+
+            var eles = document.getElementsByClassName('slider-control')
+            for(var i = 0; i < eles.length; i++){
+                var element = eles[i]
+                element.addEventListener('touchstart', e=>{
+                    var touch = e.touches ? e.touches[0] : e
+                    e.target.attributes['ex-offset'] = touch.clientX
+                })
+                element.addEventListener('touchmove', e=>{
+                    var touch = e.touches?e.touches[0]:e
+                    var w = e.target.parentNode.clientWidth - e.target.clientWidth
+                    var startX = e.target.attributes['ex-last'] || 0
+                    var x = (startX + touch.clientX - e.target.attributes['ex-offset'])
+                    if(x < 0){
+                        x = 0
+                    }
+                    if(x > w){
+                        x = w
+                    }
+                    e.target.style.left = x + 'px'
+                    e.target.attributes['ex-current'] = x
+                })
+                element.addEventListener('touchend', e=>{
+                    var w = e.target.parentNode.clientWidth - e.target.clientWidth
+                    var x = e.target.attributes['ex-current']
+                    e.target.attributes['ex-last'] = x
+                    var value = Math.round(x / w * 100)
+                    //console.log('value: ' + value)
+                    sliderChange(e.target.attributes['tag'].value, value)
+                })
+            }
+
+            // brightnessAButton.addEventListener('click', ()=> sendCmd("set-brightness-a", iptBrightnessA.value))
+            // brightnessBButton.addEventListener('click', ()=> sendCmd("set-brightness-b", iptBrightnessB.value))
+        })
+    </script>
+</head>
+
+<body οncοntextmenu="return false" onselectstart="return false" οndragstart="return false" οncοpy="return false"
+    oncut="return false;">
+    <div>
+        <div class="head">Little Lamp</div>
+        <div class="panel" id="pnl-control">
+            <div class="title">控制面板</div>
+            <div class="content">
+                <!-- <p><span class="label">显示亮度A</span><input type="text" value="50" id="ipt-brightness-a"/>&nbsp;<button id="btn-brightness-a">更改</button></p>
+                <p><span class="label">显示亮度B</span><input type="text" value="50" id="ipt-brightness-b"/>&nbsp;<button id="btn-brightness-b">更改</button></p> -->
+                <div class="content-line">
+                    <span class="label">色温</span>
+                    <div class="slider slider-color-warm">
+                        <div class="slider-control" tag="warm"></div>
+                    </div>
+                </div>
+                <div class="content-line">
+                    <span class="label">亮度</span>
+                    <div class="slider slider-color-brightness">
+                        <div class="slider-control" tag="brightness"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
