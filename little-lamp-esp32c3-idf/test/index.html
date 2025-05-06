@@ -194,7 +194,7 @@
                 getInfo((data) => {
                     for (var attr in modes) {
                         var m = modes[attr]
-                        if (m.val = data.mode) {
+                        if (m.val == data.mode) {
                             mode = m.code
                         }
                     }
@@ -204,10 +204,10 @@
                     if (modes.normal.code == mode) {
                         if (data.brightnessA > data.brightnessB) {
                             brightness = data.brightnessA
-                            warm = (data.brightnessB / data.brightnessA * 100).toFixed()
+                            warm = parseInt((data.brightnessB / data.brightnessA * 100).toFixed())
                         } else {
                             brightness = data.brightnessB
-                            warm = (data.brightnessA / data.brightnessB * 100).toFixed()
+                            warm = parseInt((data.brightnessA / data.brightnessB * 100).toFixed())
                         }
                     }
                     if (modes.color.code == mode) {

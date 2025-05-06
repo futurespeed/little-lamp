@@ -403,7 +403,7 @@ static esp_err_t info_handler(httpd_req_t *req)
     p += sprintf(p, "\"brightnessB\":%d,", lamp_info.brightnessB);
     p += sprintf(p, "\"brightness\":%d,", lamp_info.brightness);
     p += sprintf(p, "\"warm\":%d,", lamp_info.warm);
-    p += sprintf(p, "\"color\":%d,", lamp_info.color);
+    p += sprintf(p, "\"color\":%d", lamp_info.color);
     *p++ = '}';
     *p++ = 0;
     httpd_resp_set_type(req, "application/json");
