@@ -109,6 +109,7 @@
 #define RMT_LED_STRIP_GPIO_NUM      7
 
 #define EXAMPLE_LED_NUMBERS         4
+#define STORAGE_NAMESPACE "storage"
 
 static const char *TAG_AP = "WiFi SoftAP";
 static const char *TAG_STA = "WiFi Sta";
@@ -144,6 +145,68 @@ rmt_transmit_config_t tx_config = {
 
 /* FreeRTOS event group to signal when we are connected/disconnected */
 static EventGroupHandle_t s_wifi_event_group;
+static SemaphoreHandle_t xMutex;
+static uint8_t wifi_status = 0;
+
+static void mc_get_wifi_lock(void)
+{
+	xSemaphoreTake(xMutex, portMAX_DELAY);
+}
+
+static void mc_release_wifi_lock(void)
+{
+        xSemaphoreGive(xMutex);
+}
+
+static esp_err_t mc_storage_info(void)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+    err = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &my_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error (%s) opening NVS handle!", esp_err_to_name(err));
+        return err;
+    }
+
+    // Write blob
+    ESP_LOGI(TAG, "Saving lamp_info blob...");
+    err = nvs_set_blob(my_handle, "lamp_info", &lamp_info, sizeof(lamp_info_t));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write test data blob!");
+        nvs_close(my_handle);
+        return err;
+    }
+
+    // Commit
+    err = nvs_commit(my_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to commit data");
+    }
+
+    nvs_close(my_handle);
+    return err;
+}
+
+static esp_err_t mc_load_info(void)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+
+    err = nvs_open(STORAGE_NAMESPACE, NVS_READONLY, &my_handle);
+    if (err != ESP_OK) return err;
+
+    // 1. Read test data blob
+    ESP_LOGI(TAG, "Reading lamp_info blob...");
+    size_t data_size = sizeof(lamp_info_t);
+    err = nvs_get_blob(my_handle, "lamp_info", &lamp_info, &data_size);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Load lamp_info success");
+    } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Storage lamp_info not found!");
+    }
+    nvs_close(my_handle);
+    return ESP_OK;
+}
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
@@ -164,6 +227,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG_STA, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        mc_get_wifi_lock();
+	wifi_status = 0;
+        mc_release_wifi_lock();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        mc_get_wifi_lock();
+        wifi_status = 1;
+	mc_release_wifi_lock();
+        ESP_LOGI(TAG_STA, "Station disconnect");
     }
 }
 
@@ -386,6 +457,81 @@ static void example_ledc_b_init(void)
 //     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 // }
 
+static void mc_refresh_status(void)
+{
+    if (lamp_info.mode == LAMP_MODE_NORMAL)
+    {
+        ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, LEDC_MAX_DUTY*lamp_info.brightnessA/100, 1000);
+        ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, LEDC_MAX_DUTY*lamp_info.brightnessB/100, 1000);
+        // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_C, 0, 1000);
+        // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_D, 0, 1000);
+        ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
+        ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
+        // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_C, LEDC_FADE_NO_WAIT);
+        // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_D, LEDC_FADE_NO_WAIT);
+
+        memset(led_strip_pixels, 0, sizeof(led_strip_pixels));
+        ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
+        ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
+    }
+    if (lamp_info.mode == LAMP_MODE_SLEEP)
+    {
+        ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, 0, 1000);
+        ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, 0, 1000);
+        // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_C, 0, 1000);
+        // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_D, 0, 1000);
+        ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
+        ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
+        // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_C, LEDC_FADE_NO_WAIT);
+        // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_D, LEDC_FADE_NO_WAIT);
+        
+        uint32_t red = 0;
+        uint32_t green = 0;
+        uint32_t blue = 0;
+        uint16_t hue = 218;
+        ESP_LOGI(TAG, "hue: (%d)\r\n", hue);
+        led_strip_hsv2rgb(hue, 50 + (lamp_info.warm / 2.0f), lamp_info.brightness, &red, &green, &blue);
+        ESP_LOGI(TAG, "rgb=(%ld,%ld,%ld)\r\n", red, green, blue);
+        for(int j = 0; j < EXAMPLE_LED_NUMBERS; j++)
+        {
+            led_strip_pixels[j * 3 + 0] = green;
+            led_strip_pixels[j * 3 + 1] = blue;
+            led_strip_pixels[j * 3 + 2] = red;
+        }
+
+        ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
+        ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
+    }
+    if (lamp_info.mode == LAMP_MODE_COLOR)
+    {
+        ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, 0, 1000);
+        ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, 0, 1000);
+        // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_C, 0, 1000);
+        // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_D, 0, 1000);
+        ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
+        ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
+        // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_C, LEDC_FADE_NO_WAIT);
+        // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_D, LEDC_FADE_NO_WAIT);
+
+        uint32_t red = 0;
+        uint32_t green = 0;
+        uint32_t blue = 0;
+        uint16_t hue = (uint16_t) (360.0 / 100 * lamp_info.color) + 280;
+        ESP_LOGI(TAG, "hue: (%d)\r\n", hue);
+        led_strip_hsv2rgb(hue, 100, lamp_info.brightness, &red, &green, &blue);
+        ESP_LOGI(TAG, "rgb=(%ld,%ld,%ld)\r\n", red, green, blue);
+        for(int j = 0; j < EXAMPLE_LED_NUMBERS; j++)
+        {
+            led_strip_pixels[j * 3 + 0] = green;
+            led_strip_pixels[j * 3 + 1] = blue;
+            led_strip_pixels[j * 3 + 2] = red;
+        }
+
+        ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
+        ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
+    }
+}
+
 
 static esp_err_t index_handler(httpd_req_t *req)
 {
@@ -503,102 +649,20 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             lamp_info.mode = LAMP_MODE_NORMAL;
             lamp_info.brightnessA = val_a;
             lamp_info.brightnessB = val_b;
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, LEDC_MAX_DUTY*val_a/100, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, LEDC_MAX_DUTY*val_b/100, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_C, 0, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_D, 0, 1000);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_C, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_D, LEDC_FADE_NO_WAIT);
-
-            memset(led_strip_pixels, 0, sizeof(led_strip_pixels));
-            ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
-            ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
         }
         if (!strcmp(v_mode, "sleep"))
         {
             lamp_info.mode = LAMP_MODE_SLEEP;
             lamp_info.warm = val_a;
             lamp_info.brightness = val_b;
-            // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, 0, 1000);
-            // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, 0, 1000);
-            // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_C, LEDC_MAX_DUTY*val_a/100, 1000);
-            // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_D, LEDC_MAX_DUTY*val_b/100, 1000);
-            // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
-            // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
-            // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_C, LEDC_FADE_NO_WAIT);
-            // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_D, LEDC_FADE_NO_WAIT);
-
-            // memset(led_strip_pixels, 0, sizeof(led_strip_pixels));
-            // ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
-            // ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
-
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, 0, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, 0, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_C, 0, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_D, 0, 1000);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_C, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_D, LEDC_FADE_NO_WAIT);
-
-            // uint32_t v_max = val_b * 2.55f;
-            // uint32_t red = v_max;
-            // uint32_t green = v_max;
-            // uint32_t blue = v_max * ((100 - val_a) / 100.0f);
-            
-            uint32_t red = 0;
-            uint32_t green = 0;
-            uint32_t blue = 0;
-            uint16_t hue = 218;
-            ESP_LOGI(TAG, "hue: (%d)\r\n", hue);
-            led_strip_hsv2rgb(hue, 50 + (val_a / 2.0f), val_b, &red, &green, &blue);
-            ESP_LOGI(TAG, "rgb=(%ld,%ld,%ld)\r\n", red, green, blue);
-            for(int j = 0; j < EXAMPLE_LED_NUMBERS; j++)
-            {
-                // led_strip_pixels[j * 3 + 0] = green;
-                // led_strip_pixels[j * 3 + 1] = red;
-                // led_strip_pixels[j * 3 + 2] = blue;
-                led_strip_pixels[j * 3 + 0] = green;
-                led_strip_pixels[j * 3 + 1] = blue;
-                led_strip_pixels[j * 3 + 2] = red;
-            }
-
-            ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
-            ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
         }
         if (!strcmp(v_mode, "color"))
         {
             lamp_info.mode = LAMP_MODE_COLOR;
             lamp_info.color = val_a;
             lamp_info.brightness = val_b;
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, 0, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, 0, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_C, 0, 1000);
-            ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_D, 0, 1000);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_C, LEDC_FADE_NO_WAIT);
-            ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_D, LEDC_FADE_NO_WAIT);
-
-            uint32_t red = 0;
-            uint32_t green = 0;
-            uint32_t blue = 0;
-            uint16_t hue = (uint16_t) (360.0 / 100 * val_a) + 280;
-            ESP_LOGI(TAG, "hue: (%d)\r\n", hue);
-            led_strip_hsv2rgb(hue, 100, val_b, &red, &green, &blue);
-            ESP_LOGI(TAG, "rgb=(%ld,%ld,%ld)\r\n", red, green, blue);
-            for(int j = 0; j < EXAMPLE_LED_NUMBERS; j++)
-            {
-                led_strip_pixels[j * 3 + 0] = green;
-                led_strip_pixels[j * 3 + 1] = blue;
-                led_strip_pixels[j * 3 + 2] = red;
-            }
-
-            ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
-            ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
         }
+        mc_refresh_status();
     }
     else
     {
@@ -609,7 +673,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
     {
         return httpd_resp_send_500(req);
     }
-
+    mc_storage_info();
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, NULL, 0);
 }
@@ -647,6 +711,22 @@ static void mc_init_httpd()
     }
 }
 
+void mc_wifi_reconnect()
+{
+    while(true)
+    {
+        vTaskDelay(300000 / portTICK_PERIOD_MS);
+        mc_get_wifi_lock();
+	    uint8_t tmp_status = wifi_status;
+        mc_release_wifi_lock();
+        if(tmp_status == 1)
+	{
+            esp_wifi_connect();
+            ESP_LOGI(TAG_STA, "wifi reconnect");
+	}
+    }
+}
+
 // void example_blink()
 // {
 //     while(true)
@@ -666,6 +746,7 @@ static void mc_init_httpd()
 
 void app_main(void)
 {
+    xMutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -677,6 +758,9 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    mc_load_info();
+
     example_ledc_a_init();
     example_ledc_b_init();
     // example_ledc_c_init();
@@ -685,10 +769,10 @@ void app_main(void)
     // PWM使用硬件渐变
     ledc_fade_func_install(0);
 
-    ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, LEDC_DUTY, 1000);
-    ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, LEDC_DUTY, 1000);
-    ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
-    ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
+    // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_A, LEDC_DUTY, 1000);
+    // ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_B, LEDC_DUTY, 1000);
+    // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_A, LEDC_FADE_NO_WAIT);
+    // ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_B, LEDC_FADE_NO_WAIT);
 
     // xTaskCreate(example_blink, "blink-task", 4096, NULL, 1, NULL);
     
@@ -705,6 +789,9 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Enable RMT TX channel");
     ESP_ERROR_CHECK(rmt_enable(led_chan));
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    mc_refresh_status();
 
     /* Initialize event group */
     s_wifi_event_group = xEventGroupCreate();
@@ -769,6 +856,8 @@ void app_main(void)
     if (esp_netif_napt_enable(esp_netif_ap) != ESP_OK) {
         ESP_LOGE(TAG_STA, "NAPT not enabled on the netif: %p", esp_netif_ap);
     }
+
+    xTaskCreate(mc_wifi_reconnect, "wifi-reconnect-task", 4096, NULL, 5, NULL);
 
     mc_init_httpd();
 }
